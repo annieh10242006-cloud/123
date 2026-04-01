@@ -1,758 +1,224 @@
-/*!
-Waypoints - 4.0.1
-Copyright © 2011-2016 Caleb Troughton
-Licensed under the MIT license.
-https://github.com/imakewebthings/waypoints/blob/master/licenses.txt
-*/
-(function() {
-  'use strict'
-
-  var keyCounter = 0
-  var allWaypoints = {}
-
-  /* http://imakewebthings.com/waypoints/api/waypoint */
-  function Waypoint(options) {
-    if (!options) {
-      throw new Error('No options passed to Waypoint constructor')
-    }
-    if (!options.element) {
-      throw new Error('No element option passed to Waypoint constructor')
-    }
-    if (!options.handler) {
-      throw new Error('No handler option passed to Waypoint constructor')
-    }
-
-    this.key = 'waypoint-' + keyCounter
-    this.options = Waypoint.Adapter.extend({}, Waypoint.defaults, options)
-    this.element = this.options.element
-    this.adapter = new Waypoint.Adapter(this.element)
-    this.callback = options.handler
-    this.axis = this.options.horizontal ? 'horizontal' : 'vertical'
-    this.enabled = this.options.enabled
-    this.triggerPoint = null
-    this.group = Waypoint.Group.findOrCreate({
-      name: this.options.group,
-      axis: this.axis
-    })
-    this.context = Waypoint.Context.findOrCreateByElement(this.options.context)
-
-    if (Waypoint.offsetAliases[this.options.offset]) {
-      this.options.offset = Waypoint.offsetAliases[this.options.offset]
-    }
-    this.group.add(this)
-    this.context.add(this)
-    allWaypoints[this.key] = this
-    keyCounter += 1
-  }
-
-  /* Private */
-  Waypoint.prototype.queueTrigger = function(direction) {
-    this.group.queueTrigger(this, direction)
-  }
-
-  /* Private */
-  Waypoint.prototype.trigger = function(args) {
-    if (!this.enabled) {
-      return
-    }
-    if (this.callback) {
-      this.callback.apply(this, args)
-    }
-  }
-
-  /* Public */
-  /* http://imakewebthings.com/waypoints/api/destroy */
-  Waypoint.prototype.destroy = function() {
-    this.context.remove(this)
-    this.group.remove(this)
-    delete allWaypoints[this.key]
-  }
-
-  /* Public */
-  /* http://imakewebthings.com/waypoints/api/disable */
-  Waypoint.prototype.disable = function() {
-    this.enabled = false
-    return this
-  }
-
-  /* Public */
-  /* http://imakewebthings.com/waypoints/api/enable */
-  Waypoint.prototype.enable = function() {
-    this.context.refresh()
-    this.enabled = true
-    return this
-  }
-
-  /* Public */
-  /* http://imakewebthings.com/waypoints/api/next */
-  Waypoint.prototype.next = function() {
-    return this.group.next(this)
-  }
-
-  /* Public */
-  /* http://imakewebthings.com/waypoints/api/previous */
-  Waypoint.prototype.previous = function() {
-    return this.group.previous(this)
-  }
-
-  /* Private */
-  Waypoint.invokeAll = function(method) {
-    var allWaypointsArray = []
-    for (var waypointKey in allWaypoints) {
-      allWaypointsArray.push(allWaypoints[waypointKey])
-    }
-    for (var i = 0, end = allWaypointsArray.length; i < end; i++) {
-      allWaypointsArray[i][method]()
-    }
-  }
-
-  /* Public */
-  /* http://imakewebthings.com/waypoints/api/destroy-all */
-  Waypoint.destroyAll = function() {
-    Waypoint.invokeAll('destroy')
-  }
-
-  /* Public */
-  /* http://imakewebthings.com/waypoints/api/disable-all */
-  Waypoint.disableAll = function() {
-    Waypoint.invokeAll('disable')
-  }
-
-  /* Public */
-  /* http://imakewebthings.com/waypoints/api/enable-all */
-  Waypoint.enableAll = function() {
-    Waypoint.Context.refreshAll()
-    for (var waypointKey in allWaypoints) {
-      allWaypoints[waypointKey].enabled = true
-    }
-    return this
-  }
-
-  /* Public */
-  /* http://imakewebthings.com/waypoints/api/refresh-all */
-  Waypoint.refreshAll = function() {
-    Waypoint.Context.refreshAll()
-  }
-
-  /* Public */
-  /* http://imakewebthings.com/waypoints/api/viewport-height */
-  Waypoint.viewportHeight = function() {
-    return window.innerHeight || document.documentElement.clientHeight
-  }
-
-  /* Public */
-  /* http://imakewebthings.com/waypoints/api/viewport-width */
-  Waypoint.viewportWidth = function() {
-    return document.documentElement.clientWidth
-  }
-
-  Waypoint.adapters = []
-
-  Waypoint.defaults = {
-    context: window,
-    continuous: true,
-    enabled: true,
-    group: 'default',
-    horizontal: false,
-    offset: 0
-  }
-
-  Waypoint.offsetAliases = {
-    'bottom-in-view': function() {
-      return this.context.innerHeight() - this.adapter.outerHeight()
-    },
-    'right-in-view': function() {
-      return this.context.innerWidth() - this.adapter.outerWidth()
-    }
-  }
-
-  window.Waypoint = Waypoint
-}())
-;(function() {
-  'use strict'
-
-  function requestAnimationFrameShim(callback) {
-    window.setTimeout(callback, 1000 / 60)
-  }
-
-  var keyCounter = 0
-  var contexts = {}
-  var Waypoint = window.Waypoint
-  var oldWindowLoad = window.onload
-
-  /* http://imakewebthings.com/waypoints/api/context */
-  function Context(element) {
-    this.element = element
-    this.Adapter = Waypoint.Adapter
-    this.adapter = new this.Adapter(element)
-    this.key = 'waypoint-context-' + keyCounter
-    this.didScroll = false
-    this.didResize = false
-    this.oldScroll = {
-      x: this.adapter.scrollLeft(),
-      y: this.adapter.scrollTop()
-    }
-    this.waypoints = {
-      vertical: {},
-      horizontal: {}
-    }
-
-    element.waypointContextKey = this.key
-    contexts[element.waypointContextKey] = this
-    keyCounter += 1
-    if (!Waypoint.windowContext) {
-      Waypoint.windowContext = true
-      Waypoint.windowContext = new Context(window)
-    }
-
-    this.createThrottledScrollHandler()
-    this.createThrottledResizeHandler()
-  }
-
-  /* Private */
-  Context.prototype.add = function(waypoint) {
-    var axis = waypoint.options.horizontal ? 'horizontal' : 'vertical'
-    this.waypoints[axis][waypoint.key] = waypoint
-    this.refresh()
-  }
-
-  /* Private */
-  Context.prototype.checkEmpty = function() {
-    var horizontalEmpty = this.Adapter.isEmptyObject(this.waypoints.horizontal)
-    var verticalEmpty = this.Adapter.isEmptyObject(this.waypoints.vertical)
-    var isWindow = this.element == this.element.window
-    if (horizontalEmpty && verticalEmpty && !isWindow) {
-      this.adapter.off('.waypoints')
-      delete contexts[this.key]
-    }
-  }
-
-  /* Private */
-  Context.prototype.createThrottledResizeHandler = function() {
-    var self = this
-
-    function resizeHandler() {
-      self.handleResize()
-      self.didResize = false
-    }
-
-    this.adapter.on('resize.waypoints', function() {
-      if (!self.didResize) {
-        self.didResize = true
-        Waypoint.requestAnimationFrame(resizeHandler)
-      }
-    })
-  }
-
-  /* Private */
-  Context.prototype.createThrottledScrollHandler = function() {
-    var self = this
-    function scrollHandler() {
-      self.handleScroll()
-      self.didScroll = false
-    }
-
-    this.adapter.on('scroll.waypoints', function() {
-      if (!self.didScroll || Waypoint.isTouch) {
-        self.didScroll = true
-        Waypoint.requestAnimationFrame(scrollHandler)
-      }
-    })
-  }
-
-  /* Private */
-  Context.prototype.handleResize = function() {
-    Waypoint.Context.refreshAll()
-  }
-
-  /* Private */
-  Context.prototype.handleScroll = function() {
-    var triggeredGroups = {}
-    var axes = {
-      horizontal: {
-        newScroll: this.adapter.scrollLeft(),
-        oldScroll: this.oldScroll.x,
-        forward: 'right',
-        backward: 'left'
-      },
-      vertical: {
-        newScroll: this.adapter.scrollTop(),
-        oldScroll: this.oldScroll.y,
-        forward: 'down',
-        backward: 'up'
-      }
-    }
-
-    for (var axisKey in axes) {
-      var axis = axes[axisKey]
-      var isForward = axis.newScroll > axis.oldScroll
-      var direction = isForward ? axis.forward : axis.backward
-
-      for (var waypointKey in this.waypoints[axisKey]) {
-        var waypoint = this.waypoints[axisKey][waypointKey]
-        if (waypoint.triggerPoint === null) {
-          continue
-        }
-        var wasBeforeTriggerPoint = axis.oldScroll < waypoint.triggerPoint
-        var nowAfterTriggerPoint = axis.newScroll >= waypoint.triggerPoint
-        var crossedForward = wasBeforeTriggerPoint && nowAfterTriggerPoint
-        var crossedBackward = !wasBeforeTriggerPoint && !nowAfterTriggerPoint
-        if (crossedForward || crossedBackward) {
-          waypoint.queueTrigger(direction)
-          triggeredGroups[waypoint.group.id] = waypoint.group
-        }
-      }
-    }
-
-    for (var groupKey in triggeredGroups) {
-      triggeredGroups[groupKey].flushTriggers()
-    }
-
-    this.oldScroll = {
-      x: axes.horizontal.newScroll,
-      y: axes.vertical.newScroll
-    }
-  }
-
-  /* Private */
-  Context.prototype.innerHeight = function() {
-    /*eslint-disable eqeqeq */
-    if (this.element == this.element.window) {
-      return Waypoint.viewportHeight()
-    }
-    /*eslint-enable eqeqeq */
-    return this.adapter.innerHeight()
-  }
-
-  /* Private */
-  Context.prototype.remove = function(waypoint) {
-    delete this.waypoints[waypoint.axis][waypoint.key]
-    this.checkEmpty()
-  }
-
-  /* Private */
-  Context.prototype.innerWidth = function() {
-    /*eslint-disable eqeqeq */
-    if (this.element == this.element.window) {
-      return Waypoint.viewportWidth()
-    }
-    /*eslint-enable eqeqeq */
-    return this.adapter.innerWidth()
-  }
-
-  /* Public */
-  /* http://imakewebthings.com/waypoints/api/context-destroy */
-  Context.prototype.destroy = function() {
-    var allWaypoints = []
-    for (var axis in this.waypoints) {
-      for (var waypointKey in this.waypoints[axis]) {
-        allWaypoints.push(this.waypoints[axis][waypointKey])
-      }
-    }
-    for (var i = 0, end = allWaypoints.length; i < end; i++) {
-      allWaypoints[i].destroy()
-    }
-  }
-
-  /* Public */
-  /* http://imakewebthings.com/waypoints/api/context-refresh */
-  Context.prototype.refresh = function() {
-    /*eslint-disable eqeqeq */
-    var isWindow = this.element == this.element.window
-    /*eslint-enable eqeqeq */
-    var contextOffset = isWindow ? undefined : this.adapter.offset()
-    var triggeredGroups = {}
-    var axes
-
-    this.handleScroll()
-    axes = {
-      horizontal: {
-        contextOffset: isWindow ? 0 : contextOffset.left,
-        contextScroll: isWindow ? 0 : this.oldScroll.x,
-        contextDimension: this.innerWidth(),
-        oldScroll: this.oldScroll.x,
-        forward: 'right',
-        backward: 'left',
-        offsetProp: 'left'
-      },
-      vertical: {
-        contextOffset: isWindow ? 0 : contextOffset.top,
-        contextScroll: isWindow ? 0 : this.oldScroll.y,
-        contextDimension: this.innerHeight(),
-        oldScroll: this.oldScroll.y,
-        forward: 'down',
-        backward: 'up',
-        offsetProp: 'top'
-      }
-    }
-
-    for (var axisKey in axes) {
-      var axis = axes[axisKey]
-      for (var waypointKey in this.waypoints[axisKey]) {
-        var waypoint = this.waypoints[axisKey][waypointKey]
-        var adjustment = waypoint.options.offset
-        var oldTriggerPoint = waypoint.triggerPoint
-        var elementOffset = 0
-        var freshWaypoint = oldTriggerPoint == null
-        var contextModifier, wasBeforeScroll, nowAfterScroll
-        var triggeredBackward, triggeredForward
-
-        if (waypoint.element !== waypoint.element.window) {
-          elementOffset = waypoint.adapter.offset()[axis.offsetProp]
-        }
-
-        if (typeof adjustment === 'function') {
-          adjustment = adjustment.apply(waypoint)
-        }
-        else if (typeof adjustment === 'string') {
-          adjustment = parseFloat(adjustment)
-          if (waypoint.options.offset.indexOf('%') > - 1) {
-            adjustment = Math.ceil(axis.contextDimension * adjustment / 100)
-          }
-        }
-
-        contextModifier = axis.contextScroll - axis.contextOffset
-        waypoint.triggerPoint = Math.floor(elementOffset + contextModifier - adjustment)
-        wasBeforeScroll = oldTriggerPoint < axis.oldScroll
-        nowAfterScroll = waypoint.triggerPoint >= axis.oldScroll
-        triggeredBackward = wasBeforeScroll && nowAfterScroll
-        triggeredForward = !wasBeforeScroll && !nowAfterScroll
-
-        if (!freshWaypoint && triggeredBackward) {
-          waypoint.queueTrigger(axis.backward)
-          triggeredGroups[waypoint.group.id] = waypoint.group
-        }
-        else if (!freshWaypoint && triggeredForward) {
-          waypoint.queueTrigger(axis.forward)
-          triggeredGroups[waypoint.group.id] = waypoint.group
-        }
-        else if (freshWaypoint && axis.oldScroll >= waypoint.triggerPoint) {
-          waypoint.queueTrigger(axis.forward)
-          triggeredGroups[waypoint.group.id] = waypoint.group
-        }
-      }
-    }
-
-    Waypoint.requestAnimationFrame(function() {
-      for (var groupKey in triggeredGroups) {
-        triggeredGroups[groupKey].flushTriggers()
-      }
-    })
-
-    return this
-  }
-
-  /* Private */
-  Context.findOrCreateByElement = function(element) {
-    return Context.findByElement(element) || new Context(element)
-  }
-
-  /* Private */
-  Context.refreshAll = function() {
-    for (var contextId in contexts) {
-      contexts[contextId].refresh()
-    }
-  }
-
-  /* Public */
-  /* http://imakewebthings.com/waypoints/api/context-find-by-element */
-  Context.findByElement = function(element) {
-    return contexts[element.waypointContextKey]
-  }
-
-  window.onload = function() {
-    if (oldWindowLoad) {
-      oldWindowLoad()
-    }
-    Context.refreshAll()
-  }
-
-
-  Waypoint.requestAnimationFrame = function(callback) {
-    var requestFn = window.requestAnimationFrame ||
-      window.mozRequestAnimationFrame ||
-      window.webkitRequestAnimationFrame ||
-      requestAnimationFrameShim
-    requestFn.call(window, callback)
-  }
-  Waypoint.Context = Context
-}())
-;(function() {
-  'use strict'
-
-  function byTriggerPoint(a, b) {
-    return a.triggerPoint - b.triggerPoint
-  }
-
-  function byReverseTriggerPoint(a, b) {
-    return b.triggerPoint - a.triggerPoint
-  }
-
-  var groups = {
-    vertical: {},
-    horizontal: {}
-  }
-  var Waypoint = window.Waypoint
-
-  /* http://imakewebthings.com/waypoints/api/group */
-  function Group(options) {
-    this.name = options.name
-    this.axis = options.axis
-    this.id = this.name + '-' + this.axis
-    this.waypoints = []
-    this.clearTriggerQueues()
-    groups[this.axis][this.name] = this
-  }
-
-  /* Private */
-  Group.prototype.add = function(waypoint) {
-    this.waypoints.push(waypoint)
-  }
-
-  /* Private */
-  Group.prototype.clearTriggerQueues = function() {
-    this.triggerQueues = {
-      up: [],
-      down: [],
-      left: [],
-      right: []
-    }
-  }
-
-  /* Private */
-  Group.prototype.flushTriggers = function() {
-    for (var direction in this.triggerQueues) {
-      var waypoints = this.triggerQueues[direction]
-      var reverse = direction === 'up' || direction === 'left'
-      waypoints.sort(reverse ? byReverseTriggerPoint : byTriggerPoint)
-      for (var i = 0, end = waypoints.length; i < end; i += 1) {
-        var waypoint = waypoints[i]
-        if (waypoint.options.continuous || i === waypoints.length - 1) {
-          waypoint.trigger([direction])
-        }
-      }
-    }
-    this.clearTriggerQueues()
-  }
-
-  /* Private */
-  Group.prototype.next = function(waypoint) {
-    this.waypoints.sort(byTriggerPoint)
-    var index = Waypoint.Adapter.inArray(waypoint, this.waypoints)
-    var isLast = index === this.waypoints.length - 1
-    return isLast ? null : this.waypoints[index + 1]
-  }
-
-  /* Private */
-  Group.prototype.previous = function(waypoint) {
-    this.waypoints.sort(byTriggerPoint)
-    var index = Waypoint.Adapter.inArray(waypoint, this.waypoints)
-    return index ? this.waypoints[index - 1] : null
-  }
-
-  /* Private */
-  Group.prototype.queueTrigger = function(waypoint, direction) {
-    this.triggerQueues[direction].push(waypoint)
-  }
-
-  /* Private */
-  Group.prototype.remove = function(waypoint) {
-    var index = Waypoint.Adapter.inArray(waypoint, this.waypoints)
-    if (index > -1) {
-      this.waypoints.splice(index, 1)
-    }
-  }
-
-  /* Public */
-  /* http://imakewebthings.com/waypoints/api/first */
-  Group.prototype.first = function() {
-    return this.waypoints[0]
-  }
-
-  /* Public */
-  /* http://imakewebthings.com/waypoints/api/last */
-  Group.prototype.last = function() {
-    return this.waypoints[this.waypoints.length - 1]
-  }
-
-  /* Private */
-  Group.findOrCreate = function(options) {
-    return groups[options.axis][options.name] || new Group(options)
-  }
-
-  Waypoint.Group = Group
-}())
-;(function() {
-  'use strict'
-
-  var Waypoint = window.Waypoint
-
-  function isWindow(element) {
-    return element === element.window
-  }
-
-  function getWindow(element) {
-    if (isWindow(element)) {
-      return element
-    }
-    return element.defaultView
-  }
-
-  function NoFrameworkAdapter(element) {
-    this.element = element
-    this.handlers = {}
-  }
-
-  NoFrameworkAdapter.prototype.innerHeight = function() {
-    var isWin = isWindow(this.element)
-    return isWin ? this.element.innerHeight : this.element.clientHeight
-  }
-
-  NoFrameworkAdapter.prototype.innerWidth = function() {
-    var isWin = isWindow(this.element)
-    return isWin ? this.element.innerWidth : this.element.clientWidth
-  }
-
-  NoFrameworkAdapter.prototype.off = function(event, handler) {
-    function removeListeners(element, listeners, handler) {
-      for (var i = 0, end = listeners.length - 1; i < end; i++) {
-        var listener = listeners[i]
-        if (!handler || handler === listener) {
-          element.removeEventListener(listener)
-        }
-      }
-    }
-
-    var eventParts = event.split('.')
-    var eventType = eventParts[0]
-    var namespace = eventParts[1]
-    var element = this.element
-
-    if (namespace && this.handlers[namespace] && eventType) {
-      removeListeners(element, this.handlers[namespace][eventType], handler)
-      this.handlers[namespace][eventType] = []
-    }
-    else if (eventType) {
-      for (var ns in this.handlers) {
-        removeListeners(element, this.handlers[ns][eventType] || [], handler)
-        this.handlers[ns][eventType] = []
-      }
-    }
-    else if (namespace && this.handlers[namespace]) {
-      for (var type in this.handlers[namespace]) {
-        removeListeners(element, this.handlers[namespace][type], handler)
-      }
-      this.handlers[namespace] = {}
-    }
-  }
-
-  /* Adapted from jQuery 1.x offset() */
-  NoFrameworkAdapter.prototype.offset = function() {
-    if (!this.element.ownerDocument) {
-      return null
-    }
-
-    var documentElement = this.element.ownerDocument.documentElement
-    var win = getWindow(this.element.ownerDocument)
-    var rect = {
-      top: 0,
-      left: 0
-    }
-
-    if (this.element.getBoundingClientRect) {
-      rect = this.element.getBoundingClientRect()
-    }
-
-    return {
-      top: rect.top + win.pageYOffset - documentElement.clientTop,
-      left: rect.left + win.pageXOffset - documentElement.clientLeft
-    }
-  }
-
-  NoFrameworkAdapter.prototype.on = function(event, handler) {
-    var eventParts = event.split('.')
-    var eventType = eventParts[0]
-    var namespace = eventParts[1] || '__default'
-    var nsHandlers = this.handlers[namespace] = this.handlers[namespace] || {}
-    var nsTypeList = nsHandlers[eventType] = nsHandlers[eventType] || []
-
-    nsTypeList.push(handler)
-    this.element.addEventListener(eventType, handler)
-  }
-
-  NoFrameworkAdapter.prototype.outerHeight = function(includeMargin) {
-    var height = this.innerHeight()
-    var computedStyle
-
-    if (includeMargin && !isWindow(this.element)) {
-      computedStyle = window.getComputedStyle(this.element)
-      height += parseInt(computedStyle.marginTop, 10)
-      height += parseInt(computedStyle.marginBottom, 10)
-    }
-
-    return height
-  }
-
-  NoFrameworkAdapter.prototype.outerWidth = function(includeMargin) {
-    var width = this.innerWidth()
-    var computedStyle
-
-    if (includeMargin && !isWindow(this.element)) {
-      computedStyle = window.getComputedStyle(this.element)
-      width += parseInt(computedStyle.marginLeft, 10)
-      width += parseInt(computedStyle.marginRight, 10)
-    }
-
-    return width
-  }
-
-  NoFrameworkAdapter.prototype.scrollLeft = function() {
-    var win = getWindow(this.element)
-    return win ? win.pageXOffset : this.element.scrollLeft
-  }
-
-  NoFrameworkAdapter.prototype.scrollTop = function() {
-    var win = getWindow(this.element)
-    return win ? win.pageYOffset : this.element.scrollTop
-  }
-
-  NoFrameworkAdapter.extend = function() {
-    var args = Array.prototype.slice.call(arguments)
-
-    function merge(target, obj) {
-      if (typeof target === 'object' && typeof obj === 'object') {
-        for (var key in obj) {
-          if (obj.hasOwnProperty(key)) {
-            target[key] = obj[key]
-          }
-        }
-      }
-
-      return target
-    }
-
-    for (var i = 1, end = args.length; i < end; i++) {
-      merge(args[0], args[i])
-    }
-    return args[0]
-  }
-
-  NoFrameworkAdapter.inArray = function(element, array, i) {
-    return array == null ? -1 : array.indexOf(element, i)
-  }
-
-  NoFrameworkAdapter.isEmptyObject = function(obj) {
-    /* eslint no-unused-vars: 0 */
-    for (var name in obj) {
-      return false
-    }
-    return true
-  }
-
-  Waypoint.adapters.push({
-    name: 'noframework',
-    Adapter: NoFrameworkAdapter
-  })
-  Waypoint.Adapter = NoFrameworkAdapter
-}())
-;
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta content="width=device-width, initial-scale=1.0" name="viewport">
+  <title>Contact - Kelly Bootstrap Template</title>
+  <meta name="description" content="">
+  <meta name="keywords" content="">
+
+  <!-- Favicons -->
+  <link href="assets/img/favicon.png" rel="icon">
+  <link href="assets/img/apple-touch-icon.png" rel="apple-touch-icon">
+
+  <!-- Fonts -->
+  <link href="https://fonts.googleapis.com" rel="preconnect">
+  <link href="https://fonts.gstatic.com" rel="preconnect" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100;0,300;0,400;0,500;0,700;0,900;1,100;1,300;1,400;1,500;1,700;1,900&family=Poppins:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&family=Raleway:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&display=swap" rel="stylesheet">
+
+  <!-- Vendor CSS Files -->
+  <link href="assets/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+  <link href="assets/vendor/bootstrap-icons/bootstrap-icons.css" rel="stylesheet">
+  <link href="assets/vendor/aos/aos.css" rel="stylesheet">
+  <link href="assets/vendor/swiper/swiper-bundle.min.css" rel="stylesheet">
+  <link href="assets/vendor/glightbox/css/glightbox.min.css" rel="stylesheet">
+
+  <!-- Main CSS File -->
+  <link href="assets/css/main.css" rel="stylesheet">
+
+  <!-- =======================================================
+  * Template Name: Kelly
+  * Template URL: https://bootstrapmade.com/kelly-free-bootstrap-cv-resume-html-template/
+  * Updated: Aug 07 2024 with Bootstrap v5.3.3
+  * Author: BootstrapMade.com
+  * License: https://bootstrapmade.com/license/
+  ======================================================== -->
+</head>
+
+<body class="contact-page">
+
+  <header id="header" class="header d-flex align-items-center light-background sticky-top">
+    <div class="container-fluid position-relative d-flex align-items-center justify-content-between">
+
+      <a href="index.html" class="logo d-flex align-items-center me-auto me-xl-0">
+        <!-- Uncomment the line below if you also wish to use an image logo -->
+        <!-- <img src="assets/img/logo.png" alt=""> -->
+        <h1 class="sitename">Kelly</h1>
+      </a>
+
+      <nav id="navmenu" class="navmenu">
+        <ul>
+          <li><a href="index.html">Home</a></li>
+          <li><a href="about.html">About</a></li>
+          <li><a href="resume.html">Resume</a></li>
+          <li><a href="services.html">Services</a></li>
+          <li><a href="portfolio.html">Portfolio</a></li>
+          <li class="dropdown"><a href="#"><span>Dropdown</span> <i class="bi bi-chevron-down toggle-dropdown"></i></a>
+            <ul>
+              <li><a href="#">Dropdown 1</a></li>
+              <li class="dropdown"><a href="#"><span>Deep Dropdown</span> <i class="bi bi-chevron-down toggle-dropdown"></i></a>
+                <ul>
+                  <li><a href="#">Deep Dropdown 1</a></li>
+                  <li><a href="#">Deep Dropdown 2</a></li>
+                  <li><a href="#">Deep Dropdown 3</a></li>
+                  <li><a href="#">Deep Dropdown 4</a></li>
+                  <li><a href="#">Deep Dropdown 5</a></li>
+                </ul>
+              </li>
+              <li><a href="#">Dropdown 2</a></li>
+              <li><a href="#">Dropdown 3</a></li>
+              <li><a href="#">Dropdown 4</a></li>
+            </ul>
+          </li>
+          <li><a href="contact.html" class="active">Contact</a></li>
+        </ul>
+        <i class="mobile-nav-toggle d-xl-none bi bi-list"></i>
+      </nav>
+
+      <div class="header-social-links">
+        <a href="#" class="twitter"><i class="bi bi-twitter-x"></i></a>
+        <a href="#" class="facebook"><i class="bi bi-facebook"></i></a>
+        <a href="#" class="instagram"><i class="bi bi-instagram"></i></a>
+        <a href="#" class="linkedin"><i class="bi bi-linkedin"></i></a>
+      </div>
+
+    </div>
+  </header>
+
+  <main class="main">
+
+    <!-- Contact Section -->
+    <section id="contact" class="contact section">
+
+      <!-- Section Title -->
+      <div class="container section-title" data-aos="fade-up">
+        <h2>Contact</h2>
+        <p>Necessitatibus eius consequatur ex aliquid fuga eum quidem sint consectetur velit</p>
+      </div><!-- End Section Title -->
+
+      <div class="container" data-aos="fade-up" data-aos-delay="100">
+
+        <div class="row gy-4">
+
+          <div class="col-lg-5">
+
+            <div class="info-wrap">
+              <div class="info-item d-flex" data-aos="fade-up" data-aos-delay="200">
+                <i class="bi bi-geo-alt flex-shrink-0"></i>
+                <div>
+                  <h3>Address</h3>
+                  <p>A108 Adam Street, New York, NY 535022</p>
+                </div>
+              </div><!-- End Info Item -->
+
+              <div class="info-item d-flex" data-aos="fade-up" data-aos-delay="300">
+                <i class="bi bi-telephone flex-shrink-0"></i>
+                <div>
+                  <h3>Call Us</h3>
+                  <p>+1 5589 55488 55</p>
+                </div>
+              </div><!-- End Info Item -->
+
+              <div class="info-item d-flex" data-aos="fade-up" data-aos-delay="400">
+                <i class="bi bi-envelope flex-shrink-0"></i>
+                <div>
+                  <h3>Email Us</h3>
+                  <p>info@example.com</p>
+                </div>
+              </div><!-- End Info Item -->
+
+              <iframe src="https://www.google.com/maps/embed?pb=!1m14!1m8!1m3!1d48389.78314118045!2d-74.006138!3d40.710059!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x89c25a22a3bda30d%3A0xb89d1fe6bc499443!2sDowntown%20Conference%20Center!5e0!3m2!1sen!2sus!4v1676961268712!5m2!1sen!2sus" frameborder="0" style="border:0; width: 100%; height: 270px;" allowfullscreen="" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+            </div>
+          </div>
+
+          <div class="col-lg-7">
+            <form action="forms/contact.php" method="post" class="php-email-form" data-aos="fade-up" data-aos-delay="200">
+              <div class="row gy-4">
+
+                <div class="col-md-6">
+                  <label for="name-field" class="pb-2">Your Name</label>
+                  <input type="text" name="name" id="name-field" class="form-control" required="">
+                </div>
+
+                <div class="col-md-6">
+                  <label for="email-field" class="pb-2">Your Email</label>
+                  <input type="email" class="form-control" name="email" id="email-field" required="">
+                </div>
+
+                <div class="col-md-12">
+                  <label for="subject-field" class="pb-2">Subject</label>
+                  <input type="text" class="form-control" name="subject" id="subject-field" required="">
+                </div>
+
+                <div class="col-md-12">
+                  <label for="message-field" class="pb-2">Message</label>
+                  <textarea class="form-control" name="message" rows="10" id="message-field" required=""></textarea>
+                </div>
+
+                <div class="col-md-12 text-center">
+                  <div class="loading">Loading</div>
+                  <div class="error-message"></div>
+                  <div class="sent-message">Your message has been sent. Thank you!</div>
+
+                  <button type="submit">Send Message</button>
+                </div>
+
+              </div>
+            </form>
+          </div><!-- End Contact Form -->
+
+        </div>
+
+      </div>
+
+    </section><!-- /Contact Section -->
+
+  </main>
+
+  <footer id="footer" class="footer light-background">
+
+    <div class="container">
+      <div class="copyright text-center ">
+        <p>© <span>Copyright</span> <strong class="px-1 sitename">Kelly</strong> <span>All Rights Reserved<br></span></p>
+      </div>
+      <div class="social-links d-flex justify-content-center">
+        <a href=""><i class="bi bi-twitter-x"></i></a>
+        <a href=""><i class="bi bi-facebook"></i></a>
+        <a href=""><i class="bi bi-instagram"></i></a>
+        <a href=""><i class="bi bi-linkedin"></i></a>
+      </div>
+      <div class="credits">
+        <!-- All the links in the footer should remain intact. -->
+        <!-- You can delete the links only if you've purchased the pro version. -->
+        <!-- Licensing information: https://bootstrapmade.com/license/ -->
+        <!-- Purchase the pro version with working PHP/AJAX contact form: [buy-url] -->
+        Designed by <a href="https://bootstrapmade.com/">BootstrapMade</a> | <a href="https://bootstrapmade.com/tools/">DevTools</a>
+      </div>
+    </div>
+
+  </footer>
+
+  <!-- Scroll Top -->
+  <a href="#" id="scroll-top" class="scroll-top d-flex align-items-center justify-content-center"><i class="bi bi-arrow-up-short"></i></a>
+
+  <!-- Preloader -->
+  <div id="preloader"></div>
+
+  <!-- Vendor JS Files -->
+  <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
+  <script src="assets/vendor/php-email-form/validate.js"></script>
+  <script src="assets/vendor/aos/aos.js"></script>
+  <script src="assets/vendor/waypoints/noframework.waypoints.js"></script>
+  <script src="assets/vendor/purecounter/purecounter_vanilla.js"></script>
+  <script src="assets/vendor/swiper/swiper-bundle.min.js"></script>
+  <script src="assets/vendor/glightbox/js/glightbox.min.js"></script>
+  <script src="assets/vendor/imagesloaded/imagesloaded.pkgd.min.js"></script>
+  <script src="assets/vendor/isotope-layout/isotope.pkgd.min.js"></script>
+
+  <!-- Main JS File -->
+  <script src="assets/js/main.js"></script>
+
+</body>
+
+</html>
